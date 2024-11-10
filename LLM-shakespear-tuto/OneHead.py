@@ -1,3 +1,4 @@
+from sympy import Q
 import wget
 import torch
 import torch.nn as nn
@@ -6,11 +7,13 @@ from torch.nn import functional as F
 #hyperparameters
 batchsize = 32
 block_size = 8
-max_iters = 3000
-eval_interval = 300
-learning_rate = 1e-2
+max_iters = 5000
+eval_interval = 500
+learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
+nb_embed = 32
+head_size = nb_embed
 # ------------ #
 
 #wget.download("https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt")
@@ -57,17 +60,50 @@ def estimate_loss():
     model.train()
     return out
 
-class BigramLanguageModel(nn.Module):
+class Head(nn.Module):
+    def __init__(self,head_size):
+        super().__init__()
+        self.wk = nn.Linear(nb_embed,head_size, bias=False)
+        self.wq = nn.Linear(nb_embed,head_size,bias=False)
+        self.wv = nn.Linear(nb_embed,head_size,bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size,block_size)))
+        
+    
+    def forward(self,x):
+        B,T,C = x.shape
+        q = self.wq(x) # B T headsize
+        k = self.wk(x) # B T headsize
+
+        wei = q @ k.transpose(-2,-1) * C**-0.5 # B T H * B H T = B T T 
+        wei = wei.masked_fill(self.tril[:T,:T] == 0 , float('-inf')) # B T T 
+        wei = F.softmax(wei,dim= -1 ) # B T T 
+
+        v = self.wv(x)# B T headsize
+        out = wei @ v # B T T * B T headsize = B T headsize
+        return out 
+
+
+class SingleHeadAttention(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.token_embedding_table = nn.Embedding(vocab_size,vocab_size)
+
+        self.token_embedding_table = nn.Embedding(vocab_size,nb_embed)
+        self.position_embedding_table = nn.Embedding(block_size,nb_embed)
+        self.head = Head(head_size)
+        self.lm = nn.Linear(head_size,vocab_size)
 
 
     def forward(self,idx,targets= None):
         #idx is B,T
         B,T = idx.shape
-        logits = self.token_embedding_table(idx)#B,T,C
+        token_embed = self.token_embedding_table(idx) # B T C
+        pos_embed = self.position_embedding_table(torch.arange(T,device = device    )) # T C
+        x = token_embed + pos_embed # broadcasring makes B T C
+
+        x = self.head(x) # B T headsize
+
+        logits = self.lm(x) # B T H * B H V =  B T V
 
 
 
@@ -75,8 +111,8 @@ class BigramLanguageModel(nn.Module):
         if targets == None:
             loss = None
         else:
-            B,T,C = logits.shape
-            logits = logits.view(B*T,C)
+            B,T,V = logits.shape
+            logits = logits.view(B*T,V)
             targets  = targets.view(B*T)
 
             loss = F.cross_entropy(logits,targets)
@@ -86,7 +122,9 @@ class BigramLanguageModel(nn.Module):
     def generate(self, idx,max_new_tokens):
         #idx is size (B,T)
         for _ in range(max_new_tokens):
-            logits, loss = self(idx)
+            idx_cond = idx[:,-block_size:]
+
+            logits, loss = self(idx_cond)
             logits = logits[:,-1,:]
             probs = F.softmax(logits,dim=-1)
 
@@ -96,7 +134,7 @@ class BigramLanguageModel(nn.Module):
         return idx
     
 
-model = BigramLanguageModel()
+model = SingleHeadAttention()
 m = model.to(device)
 
 
