@@ -15,6 +15,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 nb_embed = 32
 head_size = nb_embed
+dropout= 0.
 # ------------ #
 
 #wget.download("https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt")
@@ -68,6 +69,7 @@ class Head(nn.Module):
         self.wq = nn.Linear(nb_embed,head_size,bias=False)
         self.wv = nn.Linear(nb_embed,head_size,bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size,block_size)))
+        self.dropout = nn.Dropout(dropout)
         
     
     def forward(self,x):
@@ -78,6 +80,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2,-1) * C**-0.5 # B T H * B H T = B T T 
         wei = wei.masked_fill(self.tril[:T,:T] == 0 , float('-inf')) # B T T 
         wei = F.softmax(wei,dim= -1 ) # B T T 
+        wei = self.dropout(wei)
 
         v = self.wv(x)# B T headsize
         out = wei @ v # B T T * B T headsize = B T headsize
@@ -87,10 +90,12 @@ class MultiHead(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(nb_heads)])
         self.proj = nn.Linear(nb_embed,nb_embed)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self,x):
         out = torch.cat([h(x) for h in self.heads], dim=-1)
-        return self.proj(out)
+        out = self.dropout(self.proj(out))
+        return out
     
 
 class FeedForward(nn.Module):
@@ -99,7 +104,8 @@ class FeedForward(nn.Module):
         self.seq = nn.Sequential(
             nn.Linear(nb_embed,nb_embed*4),
             nn.ReLU(),
-            nn.Linear(nb_embed*4,nb_embed)
+            nn.Linear(nb_embed*4,nb_embed),
+            nn.Dropout(dropout)
         )
     def forward(self,x):
         return self.seq(x)
@@ -110,10 +116,12 @@ class Block(nn.Module):
 
         self.sa_heads = MultiHead(nb_head,nb_embed//nb_head)
         self.ffw = FeedForward(nb_embed)
+        self.ln1 = nn.LayerNorm(nb_embed)
+        self.ln2 = nn.LayerNorm(nb_embed)
     
     def forward(self,x):
-        x = x + self.sa_heads(x)
-        x = x + self.ffw(x)
+        x = x + self.sa_heads(self.ln1(x))
+        x = x + self.ffw(self.ln2(x))
         return x
 
 class MultiHeadAttention(nn.Module):
@@ -126,7 +134,8 @@ class MultiHeadAttention(nn.Module):
         self.blocks = nn.Sequential(
             Block(nb_embed,4),
             Block(nb_embed,4),
-            Block(nb_embed,4)
+            Block(nb_embed,4),
+            nn.LayerNorm(nb_embed)
         )
         self.lm_head = nn.Linear(nb_embed,vocab_size)
 
