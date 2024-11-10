@@ -1,3 +1,4 @@
+from turtle import forward
 from sympy import Q
 import wget
 import torch
@@ -81,17 +82,36 @@ class Head(nn.Module):
         v = self.wv(x)# B T headsize
         out = wei @ v # B T T * B T headsize = B T headsize
         return out 
+class MultiHead(nn.Module):
+    def __init__(self,nb_heads,head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(nb_heads)])
+
+    def forward(self,x):
+        return torch.cat([h(x) for h in self.heads], dim=-1)
+    
+
+class FeedForward(nn.Module):
+    def __init__(self,nb_embed):
+        super().__init__()
+        seq = nn.Sequential(
+            nn.Linear(nb_embed,nb_embed),
+            nn.ReLU(),
+        )
+    def forward(self,x):
+        return self.seq(x)
 
 
-class SingleHeadAttention(nn.Module):
+class MultiHeadAttention(nn.Module):
 
     def __init__(self):
         super().__init__()
 
         self.token_embedding_table = nn.Embedding(vocab_size,nb_embed)
         self.position_embedding_table = nn.Embedding(block_size,nb_embed)
-        self.head = Head(nb_embed)
-        self.lm = nn.Linear(nb_embed,vocab_size)
+        self.sa_heads = MultiHead(4,nb_embed//4)
+        self.feed_forward = FeedForward(nb_embed)
+        self.lm_head = nn.Linear(nb_embed,vocab_size)
 
 
     def forward(self,idx,targets= None):
@@ -101,9 +121,9 @@ class SingleHeadAttention(nn.Module):
         pos_embed = self.position_embedding_table(torch.arange(T,device = device    )) # T C
         x = token_embed + pos_embed # broadcasring makes B T C
 
-        x = self.head(x) # B T headsize
-
-        logits = self.lm(x) # B T H * B H V =  B T V
+        x = self.sa_heads(x) # B T headsize
+        x = self.feed_forward(x)
+        logits = self.lm_head(x) # B T H * B H V =  B T V
 
 
 
@@ -134,7 +154,7 @@ class SingleHeadAttention(nn.Module):
         return idx
     
 
-model = SingleHeadAttention()
+model = MultiHeadAttention()
 m = model.to(device)
 
 
